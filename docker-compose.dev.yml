@@ -1,7 +1,54 @@
+# docker-compose.dev.yml
+# SOVDpilot — local development stack
+#
+# SPDX-License-Identifier: Apache-2.0
+
 services:
+
   kuksa-databroker:
     image: ghcr.io/eclipse-kuksa/kuksa-databroker:0.4.4
-    container_name: kuksa-databroker
+    container_name: sovdpilot-kuksa
+    restart: unless-stopped
     ports:
       - "55555:55555"
-    command: ["--insecure"]
+    command: >
+      --address 0.0.0.0
+      --port 55555
+      --insecure
+    networks:
+      - sovdpilot-net
+
+  opensovd-gateway:
+    image: ghcr.io/eclipse-opensovd/opensovd-gateway:latest
+    container_name: sovdpilot-opensovd
+    restart: unless-stopped
+    ports:
+      - "7690:7690"
+    command: ["--mock"]
+    networks:
+      - sovdpilot-net
+
+  kuksa-feeder:
+    image: python:3.12-slim
+    container_name: sovdpilot-feeder
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ./services/kuksa-feeder:/app
+    command: >
+      sh -c "pip install kuksa-client httpx requests --quiet &&
+             python sovd_feeder.py"
+    environment:
+      SOVD_BASE_URL: "http://opensovd-gateway:7690"
+      KUKSA_HOST: "sovdpilot-kuksa"
+      KUKSA_PORT: "55555"
+      POLL_INTERVAL_SECONDS: "2"
+    depends_on:
+      - opensovd-gateway
+      - kuksa-databroker
+    networks:
+      - sovdpilot-net
+
+networks:
+  sovdpilot-net:
+    driver: bridge

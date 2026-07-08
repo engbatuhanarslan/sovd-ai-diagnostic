@@ -2,15 +2,15 @@
 SOVDpilot — SOVD to Kuksa Feeder (dev/mock)
 Polls OpenSOVD gateway and feeds VSS signals into Kuksa Databroker.
 """
-
+import os
 import time
 import requests
 from kuksa_client.grpc import VSSClient, Datapoint
 
-SOVD_BASE = "http://127.0.0.1:7690/sovd/v1/components/ecu/data"
-KUKSA_HOST = "127.0.0.1"
-KUKSA_PORT = 55555
-POLL_INTERVAL = 2  # seconds
+SOVD_BASE  = os.getenv("SOVD_BASE_URL", "http://127.0.0.1:7690") + "/sovd/v1/components/ecu/data"
+KUKSA_HOST = os.getenv("KUKSA_HOST", "127.0.0.1")
+KUKSA_PORT = int(os.getenv("KUKSA_PORT", "55555"))
+POLL_INTERVAL = int(os.getenv("POLL_INTERVAL_SECONDS", "2"))
 
 SOVD_TO_VSS = {
     "temperature": "Vehicle.OBD.CoolantTemperature",
@@ -27,20 +27,18 @@ def fetch_sovd(signal_id: str) -> float | None:
         return None
 
 def main():
-    print("🚗 SOVDpilot feeder starting...")
+    print(f"SOVDpilot feeder starting... KUKSA={KUKSA_HOST}:{KUKSA_PORT} SOVD={SOVD_BASE}")
     with VSSClient(KUKSA_HOST, KUKSA_PORT) as client:
-        print(f"✅ Connected to Kuksa at {KUKSA_HOST}:{KUKSA_PORT}")
+        print(f"Connected to Kuksa at {KUKSA_HOST}:{KUKSA_PORT}")
         while True:
             updates = {}
             for sovd_id, vss_path in SOVD_TO_VSS.items():
                 value = fetch_sovd(sovd_id)
                 if value is not None:
                     updates[vss_path] = Datapoint(value)
-                    print(f"  {sovd_id:12} → {vss_path}: {value}")
-
+                    print(f"  {sovd_id:12} -> {vss_path}: {value}")
             if updates:
                 client.set_current_values(updates)
-
             time.sleep(POLL_INTERVAL)
 
 if __name__ == "__main__":
