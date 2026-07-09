@@ -1,35 +1,43 @@
 #!/usr/bin/env python3
 """
 services/diag-agent/diag_agent.py
-SOVDpilot Diagnostic Agent — Groq backend.
+SOVDpilot Diagnostic Agent — Ollama local LLM backend.
 SPDX-License-Identifier: Apache-2.0
 """
 
-import json
-import os
-import sys
-import time
+import json, os, sys, time
 from typing import Any
-
 import httpx
 
 try:
-    from groq import Groq
+    from openai import OpenAI
 except ImportError:
-    sys.exit("groq SDK not installed. Run: pip install groq")
+    sys.exit("openai SDK not installed. Run: pip install openai")
 
 try:
-    from kuksa_client.grpc import VSSClient, Datapoint  # noqa: F401
+    from kuksa_client.grpc import VSSClient, Datapoint
 except ImportError:
-    sys.exit("kuksa-client not installed. Run: pip install kuksa-client")
+    sys.exit("kuksa-client not installed.")
 
 SOVD_BASE_URL  = os.getenv("SOVD_BASE_URL", "http://localhost:7690")
 KUKSA_HOST     = os.getenv("KUKSA_HOST", "127.0.0.1")
 KUKSA_PORT     = int(os.getenv("KUKSA_PORT", "55555"))
-MODEL          = "llama-3.3-70b-versatile"
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+MODEL          = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 POLL_INTERVAL  = 5
 TRIGGER_PATH   = "Vehicle.OBD.ThrottlePosition"
-TRIGGER_THRESH = 200.0  # >200 means injected fault sentinel
+NORMAL_MAX     = 100.0  # >100 means encoded DTC
+
+DTC_DESCRIPTIONS = {
+    "P0420": "Catalyst System Efficiency Below Threshold (Bank 1)",
+    "P0300": "Random/Multiple Cylinder Misfire Detected",
+    "P0171": "System Too Lean (Bank 1)",
+    "P0101": "Mass Air Flow Sensor Circuit Range/Performance",
+    "P0301": "Cylinder 1 Misfire Detected",
+}
+
+def value_to_dtc(value: float) -> str:
+    return f"P{int(value):04d}"  # 420.0 → P0420
 
 TOOLS = [
     {
@@ -74,12 +82,11 @@ TOOLS = [
 
 SYSTEM_PROMPT = """\
 You are SOVDpilot, an AI diagnostic copilot for Software Defined Vehicles (SDV).
-You have access to live vehicle data via SOVD REST APIs and Kuksa Databroker.
 
 Available SOVD data (use get_ecu_data):
-- component='ecu', data_id='voltage'                          -> battery voltage (V)
-- component='ecu', data_id='temperature'                      -> engine temperature (C)
-- component='apps/engine_control', data_id='app.status'       -> ECU app status
+- component='ecu', data_id='voltage'                             -> battery voltage (V)
+- component='ecu', data_id='temperature'                         -> engine temperature (C)
+- component='apps/engine_control', data_id='app.status'          -> ECU app status
 - component='apps/engine_control', data_id='fuel_injection.rate' -> fuel injection rate (L/h)
 
 Available VSS signals (use get_vss_signal):
@@ -94,7 +101,6 @@ When given a fault event:
 4. Suggest 3-5 actionable next steps for the technician.
 """
 
-
 def sovd_get(path: str) -> Any:
     url = f"{SOVD_BASE_URL}{path}"
     try:
@@ -103,7 +109,6 @@ def sovd_get(path: str) -> Any:
         return resp.json()
     except httpx.HTTPError as exc:
         return {"error": str(exc)}
-
 
 def kuksa_get(vss_path: str) -> Any:
     try:
@@ -115,7 +120,6 @@ def kuksa_get(vss_path: str) -> Any:
             return {"vss_path": vss_path, "value": dp.value, "timestamp": str(dp.timestamp)}
     except Exception as exc:
         return {"vss_path": vss_path, "error": str(exc)}
-
 
 def execute_tool(name: str, inputs: dict) -> str:
     if name == "get_ecu_data":
@@ -131,9 +135,13 @@ def execute_tool(name: str, inputs: dict) -> str:
         result = {"error": f"Unknown tool: {name}"}
     return json.dumps(result, default=str)
 
-
 def run_agent(fault_event: dict) -> str:
-    client = Groq()
+    # Ollama OpenAI-compat client — api_key dummy, zorunlu parametre
+    client = OpenAI(
+        base_url=OLLAMA_BASE_URL,
+        api_key="ollama",
+    )
+
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {
@@ -145,8 +153,8 @@ def run_agent(fault_event: dict) -> str:
             ),
         },
     ]
-
-    print(f"\n[agent] Analysing fault: {fault_event.get('dtc', 'unknown')}")
+    print(f"\n[agent] Analysing fault: {fault_event.get('dtc')} — {fault_event.get('description')}")
+    print(f"[agent] Using model: {MODEL} via {OLLAMA_BASE_URL}")
 
     while True:
         response = client.chat.completions.create(
@@ -156,45 +164,44 @@ def run_agent(fault_event: dict) -> str:
             tool_choice="auto",
             max_tokens=1024,
         )
-
         msg = response.choices[0].message
         messages.append(msg)
 
-        if response.choices[0].finish_reason == "stop":
+        finish_reason = response.choices[0].finish_reason
+
+        if finish_reason == "stop":
             return msg.content or "(no response)"
+        if finish_reason != "tool_calls":
+            return f"(unexpected finish_reason: {finish_reason})"
 
-        if response.choices[0].finish_reason != "tool_calls":
-            return f"(unexpected finish_reason: {response.choices[0].finish_reason})"
-
-        for tool_call in msg.tool_calls:
-            inputs = json.loads(tool_call.function.arguments)
-            print(f"[agent] -> {tool_call.function.name}({inputs})")
-            result_str = execute_tool(tool_call.function.name, inputs)
-            print(f"[agent] <- {result_str[:100]}{'...' if len(result_str) > 100 else ''}")
+        for tc in msg.tool_calls:
+            inputs = json.loads(tc.function.arguments)
+            print(f"[agent] -> {tc.function.name}({inputs})")
+            result_str = execute_tool(tc.function.name, inputs)
+            print(f"[agent] <- {result_str[:100]}{'...' if len(result_str)>100 else ''}")
             messages.append({
                 "role": "tool",
-                "tool_call_id": tool_call.id,
+                "tool_call_id": tc.id,
                 "content": result_str,
             })
 
-
 def poll_for_faults() -> None:
-    last_trigger: float | None = None
-    print(f"[poller] Watching {TRIGGER_PATH} > {TRIGGER_THRESH} for fault trigger")
-    print("[poller] Run 'python3 tools/inject-dtc/inject_dtc.py --dtc P0420' to trigger.\n")
+    last_value: float | None = None
+    print(f"[poller] Watching {TRIGGER_PATH} > {NORMAL_MAX} for fault trigger")
+    print(f"[poller] LLM backend: {OLLAMA_BASE_URL} | model: {MODEL}")
+    print("[poller] Run 'python3 tools/inject-dtc/inject_dtc.py --dtc <CODE>' to trigger. Example: --dtc P0300\n")
 
     while True:
         raw = kuksa_get(TRIGGER_PATH)
         value = raw.get("value")
 
-        if value is not None and float(value) > TRIGGER_THRESH and value != last_trigger:
-            last_trigger = value
-            event = {
-                "dtc": "P0420",
-                "trigger": f"{TRIGGER_PATH}={value}",
-                "description": "Catalyst System Efficiency Below Threshold (Bank 1)",
-            }
-            print(f"[poller] Fault trigger detected: {TRIGGER_PATH} = {value}")
+        if value is not None and float(value) > NORMAL_MAX and value != last_value:
+            last_value = value
+            dtc_code = value_to_dtc(float(value))
+            desc = DTC_DESCRIPTIONS.get(dtc_code, f"Fault code {dtc_code}")
+            event = {"dtc": dtc_code, "description": desc, "encoded_value": value}
+            print(f"[poller] Fault detected: {TRIGGER_PATH} = {value} → {dtc_code}")
+
             analysis = run_agent(event)
             print("\n" + "=" * 60)
             print("SOVDpilot Analysis:")
@@ -202,17 +209,15 @@ def poll_for_faults() -> None:
             print(analysis)
             print("=" * 60 + "\n")
 
-            # Reset trigger after analysis
+            # Reset trigger
             with VSSClient(KUKSA_HOST, KUKSA_PORT) as client:
                 client.set_current_values({TRIGGER_PATH: Datapoint(0.0)})
-            last_trigger = None
+            last_value = None
 
         time.sleep(POLL_INTERVAL)
 
-
 if __name__ == "__main__":
-    if not os.getenv("GROQ_API_KEY"):
-        sys.exit("GROQ_API_KEY environment variable not set.")
+    # Ollama için API key gerekmez ama env kontrolü kaldırıldı
     try:
         poll_for_faults()
     except KeyboardInterrupt:
