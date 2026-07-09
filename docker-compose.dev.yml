@@ -1,10 +1,7 @@
 # docker-compose.dev.yml
 # SOVDpilot — local development stack
-#
 # SPDX-License-Identifier: Apache-2.0
-
 services:
-
   kuksa-databroker:
     image: ghcr.io/eclipse-kuksa/kuksa-databroker:0.4.4
     container_name: sovdpilot-kuksa
@@ -48,6 +45,27 @@ services:
       - kuksa-databroker
     networks:
       - sovdpilot-net
+
+  diag-agent:
+    build:
+      context: ./services/diag-agent
+      dockerfile: Dockerfile
+    container_name: sovdpilot-agent
+    restart: unless-stopped
+    environment:
+      SOVD_BASE_URL: "http://opensovd-gateway:7690"
+      KUKSA_HOST: "sovdpilot-kuksa"
+      KUKSA_PORT: "55555"
+      OLLAMA_BASE_URL: "http://host.docker.internal:11434/v1"
+      OLLAMA_MODEL: "llama3.1:8b"
+    depends_on:
+      - kuksa-databroker
+      - opensovd-gateway
+      - kuksa-feeder
+    networks:
+      - sovdpilot-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 networks:
   sovdpilot-net:

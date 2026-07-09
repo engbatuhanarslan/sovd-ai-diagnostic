@@ -89,10 +89,11 @@ Available SOVD data (use get_ecu_data):
 - component='apps/engine_control', data_id='app.status'          -> ECU app status
 - component='apps/engine_control', data_id='fuel_injection.rate' -> fuel injection rate (L/h)
 
-Available VSS signals (use get_vss_signal):
-- Vehicle.OBD.CoolantTemperature  (C)
-- Vehicle.OBD.ControlModuleVoltage (V)
-- Vehicle.OBD.EngineSpeed (RPM)
+Available VSS signals (use get_vss_signal).
+Use ONLY these exact vss_path values, no quotes, no units:
+- vss_path: Vehicle.OBD.CoolantTemperature
+- vss_path: Vehicle.OBD.ControlModuleVoltage
+- vss_path: Vehicle.OBD.EngineSpeed
 
 When given a fault event:
 1. Fetch ALL available data points from SOVD and Kuksa.
