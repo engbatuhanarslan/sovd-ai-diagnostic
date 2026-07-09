@@ -1,0 +1,85 @@
+# infra/ankaios/sovdpilot.yaml
+# SOVDpilot Ankaios startup manifest
+# SPDX-License-Identifier: Apache-2.0
+apiVersion: v1
+workloads:
+  kuksa-databroker:
+    runtime: podman
+    agent: agent_A
+    restartPolicy: ALWAYS
+    runtimeConfig: |
+      image: ghcr.io/eclipse-kuksa/kuksa-databroker:0.4.4
+      commandArgs:
+        - "--address"
+        - "0.0.0.0"
+        - "--port"
+        - "55555"
+        - "--insecure"
+      commandOptions:
+        - "-p"
+        - "55555:55555"
+        - "--network"
+        - "sovdpilot"
+
+  opensovd-gateway:
+    runtime: podman
+    agent: agent_A
+    restartPolicy: ALWAYS
+    runtimeConfig: |
+      image: ghcr.io/eclipse-opensovd/opensovd-gateway:latest
+      commandArgs:
+        - "--mock"
+      commandOptions:
+        - "-p"
+        - "7690:7690"
+        - "--network"
+        - "sovdpilot"
+
+  kuksa-feeder:
+    runtime: podman
+    agent: agent_A
+    restartPolicy: ALWAYS
+    dependencies:
+      kuksa-databroker: ADD_COND_RUNNING
+      opensovd-gateway: ADD_COND_RUNNING
+    runtimeConfig: |
+      image: docker.io/library/python:3.12-slim
+      commandArgs:
+        - "sh"
+        - "-c"
+        - "pip install kuksa-client httpx requests --quiet && python /app/sovd_feeder.py"
+      commandOptions:
+        - "-v"
+        - "/home/batua/sovd-ai-diagnostic/services/kuksa-feeder:/app"
+        - "--network"
+        - "sovdpilot"
+        - "-e"
+        - "SOVD_BASE_URL=http://opensovd-gateway:7690"
+        - "-e"
+        - "KUKSA_HOST=kuksa-databroker"
+        - "-e"
+        - "KUKSA_PORT=55555"
+
+  diag-agent:
+    runtime: podman
+    agent: agent_A
+    restartPolicy: ALWAYS
+    dependencies:
+      kuksa-databroker: ADD_COND_RUNNING
+      opensovd-gateway: ADD_COND_RUNNING
+      kuksa-feeder: ADD_COND_RUNNING
+    runtimeConfig: |
+      image: localhost/sovd-ai-diagnostic-diag-agent:latest
+      commandOptions:
+        - "--network"
+        - "sovdpilot"
+        - "-e"
+        - "SOVD_BASE_URL=http://opensovd-gateway:7690"
+        - "-e"
+        - "KUKSA_HOST=kuksa-databroker"
+        - "-e"
+        - "KUKSA_PORT=55555"
+        - "-e"
+        - "OLLAMA_BASE_URL=http://host.gateway.internal:11434/v1"
+        - "-e"
+        - "OLLAMA_MODEL=llama3.1:8b"
