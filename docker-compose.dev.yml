@@ -36,7 +36,7 @@ services:
       sh -c "pip install kuksa-client httpx requests --quiet &&
              python sovd_feeder.py"
     environment:
-      SOVD_BASE_URL: "http://opensovd-gateway:7690"
+      SOVD_BASE_URL: "http://mock-sovd-gateway:7691"
       KUKSA_HOST: "sovdpilot-kuksa"
       KUKSA_PORT: "55555"
       POLL_INTERVAL_SECONDS: "2"
@@ -53,20 +53,47 @@ services:
     container_name: sovdpilot-agent
     restart: unless-stopped
     environment:
-      SOVD_BASE_URL: "http://opensovd-gateway:7690"
+      SOVD_BASE_URL: "http://mock-sovd-gateway:7691"
       KUKSA_HOST: "sovdpilot-kuksa"
       KUKSA_PORT: "55555"
-      OLLAMA_BASE_URL: "http://host.docker.internal:11434/v1"
+      OLLAMA_BASE_URL: "http://sovdpilot-ollama:11434/v1"
       OLLAMA_MODEL: "llama3.1:8b"
     depends_on:
       - kuksa-databroker
       - opensovd-gateway
       - kuksa-feeder
+      - ollama
+      - mock-sovd-gateway
+
     networks:
       - sovdpilot-net
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sovdpilot-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - sovdpilot-net
+
+  mock-sovd-gateway:
+    build:
+      context: ./services/mock-sovd-gateway
+      dockerfile: Dockerfile
+    container_name: sovdpilot-mock-gw
+    restart: unless-stopped
+    ports:
+      - "7691:7691"
+    networks:
+      - sovdpilot-net
 
 networks:
   sovdpilot-net:
     driver: bridge
+
+volumes:
+  ollama-data:
+
